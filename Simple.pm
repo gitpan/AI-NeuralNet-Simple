@@ -1,7 +1,7 @@
 package AI::NeuralNet::Simple;
 
-$REVISION = '$Id: Simple.pm,v 1.1.1.1 2003/10/05 14:16:14 ovid Exp $';
-$VERSION  = '.01';
+$REVISION = '$Id: Simple.pm,v 1.3 2004/01/31 20:34:11 ovid Exp $';
+$VERSION  = '0.02';
 
 use strict;
 use warnings;
@@ -66,6 +66,17 @@ sub winner
         $largest = $_ if $arrayref->[$_] > $arrayref->[$largest];
     }
     return $largest;
+}
+
+sub learn_rate
+{
+    my ($self,$rate) = @_;
+    return _get_learn_rate(0) unless defined $rate; 
+    unless ($rate > 0 and $rate < 1) {
+        die "learn rate must be between 0 and 1, exclusive";
+    }
+    _set_learn_rate($rate);
+    return $self;
 }
 
 sub DESTROY
@@ -140,6 +151,8 @@ void   _back_propogate(void);
 void   _destroy_network();
 void   _feed(double *input, double *output, int learn);
 void   _feed_forward(void);
+float  _get_learn_rate(int);
+void   _set_learn_rate(float);
 
 int is_array_ref(SV* ref)
 {
@@ -202,9 +215,17 @@ AV* get_array_from_aoa(SV* aref, int index)
     return get_array(elem);
 }
 
-/*
- * we'll come back later and clean these up!
- */
+/* apparently, I have to pass *something* to this function
+   or else Perl won't be able to call it :*/
+float _get_learn_rate(int dummy)
+{
+    return network.learn_rate;
+}
+
+void _set_learn_rate(float rate)
+{
+    network.learn_rate = rate;
+}
 
 int _create_network(void)
 {
@@ -536,7 +557,7 @@ SV* _infer(SV *array_ref)
     perl_array = get_array(array_ref);
     c_array    = malloc(sizeof(double) * network.size.input);
 
-    for (i = 0; i < network.size.output; i++)
+    for (i = 0; i < network.size.input; i++)
         c_array[i] = get_float_element(perl_array, i);
 
     _feed(c_array, dummy, 0); 
@@ -704,7 +725,7 @@ available with three of the most common being the linear, sigmoid, and tahn
 activation functions.  For technical reasons, the linear activation function
 cannot be used with the type of network that C<AI::NeuralNet::Simple> employs.
 This module uses the sigmoid activation function.  (More information about
-these can be found by reading the inforamation in the L<SEE ALSO> section or by
+these can be found by reading the information in the L<SEE ALSO> section or by
 just searching with Google.)
 
 Once the activation function is applied, the output is then sent through the
@@ -812,20 +833,20 @@ network described earlier:
 This method trains the network to associate the input data set with the output
 data set.  Representing the "logical or" is as follows:
 
-  $net->train([1,1], [0,1]);
-  $net->train([1,0], [0,1]);
-  $net->train([0,1], [0,1]);
-  $net->train([0,0], [1,0]);
+  $net->train([1,1] => [0,1]);
+  $net->train([1,0] => [0,1]);
+  $net->train([0,1] => [0,1]);
+  $net->train([0,0] => [1,0]);
 
 Note that a one pass through the data is seldom sufficient to train a network.
 In the example "logical or" program, we actually run this data through the
 network ten thousand times.
 
   for (1 .. 10000) {
-    $net->train([1,1], [0,1]);
-    $net->train([1,0], [0,1]);
-    $net->train([0,1], [0,1]);
-    $net->train([0,0], [1,0]);
+    $net->train([1,1] => [0,1]);
+    $net->train([1,0] => [0,1]);
+    $net->train([0,1] => [0,1]);
+    $net->train([0,0] => [1,0]);
   }
 
 =head2 C<train_set(\@dataset, [$iterations])>
@@ -839,28 +860,47 @@ set it (prior to calling C<train_set()>, of course).  A default of 10,000 will
 be provided if not set.
 
   $net->train_set([
-    [1,1], [0,1],
-    [1,0], [0,1],
-    [0,1], [0,1],
-    [0,0], [1,0],
+    [1,1] => [0,1],
+    [1,0] => [0,1],
+    [0,1] => [0,1],
+    [0,0] => [1,0],
   ], 10000);
 
 =head2 C<iterations([$integer])>
 
 If called with a positive integer argument, this method will allow you to set
-number of iterations that train_set will use.  If called without an argument,
-it will return the number of iterations it was set to.
+number of iterations that train_set will use and will return the network
+object.  If called without an argument, it will return the number of iterations
+it was set to.
 
-  $net->iterations(100000); # let's have lots more iterations!
   $net->iterations;         # returns 100000
   my @training_data = ( 
-    [1,1], [0,1],
-    [1,0], [0,1],
-    [0,1], [0,1],
-    [0,0], [1,0],
+    [1,1] => [0,1],
+    [1,0] => [0,1],
+    [0,1] => [0,1],
+    [0,0] => [1,0],
   );
-  $net->train_set(\@training_data);
+  $net->iterations(100000) # let's have lots more iterations!
+      ->train_set(\@training_data);
   
+=head2 C<learn_rate($rate)>)
+
+This method, if called without an argument, will return the current learning
+rate.  .20 is the default learning rate.
+
+If called with an argument, this argument must be greater than zero and less
+than one.  This will set the learning rate and return the object.
+  
+  $net->learn_rate; #returns the learning rate
+  $net->learn_rate(.1)
+      ->iterations(100000)
+      ->train_set(\@training_data);
+
+If you choose a lower learning rate, you will train the network slower, but you
+may get a better accuracy.  A higher learning rate will train the network
+faster, but it can have a tendancy to "overshoot" the answer when learning and
+not learn as accurately.
+
 =head2 C<infer(\@input)>
 
 This method, if provided with an input array reference, will return an array
@@ -888,9 +928,36 @@ This method returns the index of the highest value from inferred results:
 For a more comprehensive example of how this is used, see the 
 "examples/game_ai.pl" program.
 
-=head2 EXPORT
+=head1 EXPORT
 
 None by default.
+
+=head1 CAVEATS
+
+This is B<alpha> code.  Very alpha.  Not even close to ready for production,
+don't even think about it.  I'm putting it on the CPAN lest it languish on my
+hard-drive forever.  Hopefully someone will get some use out of it and think to
+send me a patch or two.
+
+=head1 TODO
+
+=over 4
+
+=item * Make MSE (mean squared error) public
+
+=item * Save and restore networks
+
+=item * Allow more than one network at a time
+
+=item * Allow different activation functions
+
+=item * Allow different numbers of layers
+
+=back
+
+=head1 BUGS
+
+Probably.
 
 =head1 SEE ALSO
 
@@ -910,7 +977,9 @@ feed back error propogation is but one of many types.
 
 =head1 AUTHOR
 
-Curtis "Ovid" Poe, E<lt>poec@yahoo.comE<gt>
+Curtis "Ovid" Poe, E<lt>eop_divo_sitruc@yahoo.comE<gt>
+
+To email me, reverse "eop_divo_sitruc" in the email above.
 
 =head1 COPYRIGHT AND LICENSE
 

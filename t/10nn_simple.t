@@ -1,4 +1,4 @@
-use Test::More 'no_plan';
+use Test::More tests => 18;
 use Test::Exception;
 use strict;
 
@@ -22,6 +22,15 @@ throws_ok {$CLASS->new(qw/foo bar 2/)}
 my $net = $CLASS->new(2,1,2);
 ok($net, 'Calling new with good arguments should succeed');
 isa_ok($net, $CLASS => '...and the object it returns');
+
+can_ok($net, 'learn_rate');
+throws_ok {$net->learn_rate(2)}
+    qr/^\Qlearn rate must be between 0 and 1, exclusive\E/,
+    '... and setting it outside of legal boundaries should die';
+is(sprintf("%.1f", $net->learn_rate), "0.2", '... and it should have the correct learn rate');
+isa_ok($net->learn_rate(.3), $CLASS => '... and setting it should return the object');
+is(sprintf("%.1f", $net->learn_rate), "0.3", '... and should set it correctly');
+$net->learn_rate(.2);
 
 can_ok($net, 'train');
 

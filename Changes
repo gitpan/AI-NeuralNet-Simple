@@ -1,5 +1,12 @@
 Revision history for Perl extension AI::NeuralNet::Simple.
 
+0.01  Sat Jan 31 12:19:00 2004
+      Applied patch from "Daniel L. Ashbrook" <anjiro [at] cc.gatech.edu> to fix a
+      small memory allocation bug in infer()
+
+      Added learn_rate() method to expose the network.learn_rate.  This should help
+      programmers who wish to fine-tune the network training.
+
 0.01  Sun Oct  5 10:03:18 2003
 	- original version; created by h2xs 1.22 with options
 		-AX -n AI::NeuralNet::Simple
