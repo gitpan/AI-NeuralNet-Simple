@@ -1,7 +1,7 @@
 package AI::NeuralNet::Simple;
 
 $REVISION = '$Id: Simple.pm,v 1.1.1.1 2003/10/05 14:16:14 ovid Exp $';
-$VERSION  = '0.01';
+$VERSION  = '.01';
 
 use strict;
 use warnings;
@@ -704,7 +704,7 @@ available with three of the most common being the linear, sigmoid, and tahn
 activation functions.  For technical reasons, the linear activation function
 cannot be used with the type of network that C<AI::NeuralNet::Simple> employs.
 This module uses the sigmoid activation function.  (More information about
-these can be found by reading the information in the L<SEE ALSO> section or by
+these can be found by reading the inforamation in the L<SEE ALSO> section or by
 just searching with Google.)
 
 Once the activation function is applied, the output is then sent through the
@@ -888,38 +888,9 @@ This method returns the index of the highest value from inferred results:
 For a more comprehensive example of how this is used, see the 
 "examples/game_ai.pl" program.
 
-=head1 EXPORT
+=head2 EXPORT
 
 None by default.
-
-=head1 CAVEATS
-
-This is B<alpha> code.  Very alpha.  Not even close to ready for production,
-don't even think about it.  I'm putting it on the CPAN lest it languish on my
-hard-drive forever.  Hopefully someone will get some use out of it and think to
-send me a patch or two.
-
-=head1 TODO
-
-=over 4
-
-=item * Allow user to set training rate
-
-=item * Make MSE (mean squared error) public
-
-=item * Save and restore networks
-
-=item * Allow more than one network at a time
-
-=item * Allow different activation functions
-
-=item * Allow different numbers of layers
-
-=back
-
-=head1 BUGS
-
-Probably.
 
 =head1 SEE ALSO
 
@@ -939,9 +910,7 @@ feed back error propogation is but one of many types.
 
 =head1 AUTHOR
 
-Curtis "Ovid" Poe, E<lt>eop_divo_sitruc@yahoo.comE<gt>
-
-To email me, reverse "eop_divo_sitruc" in the email above.
+Curtis "Ovid" Poe, E<lt>poec@yahoo.comE<gt>
 
 =head1 COPYRIGHT AND LICENSE
 

@@ -6,4 +6,3 @@ Simple.pm
 t/10nn_simple.t
 examples/game_ai.pl
 examples/logical_or.pl
-META.yml                                 Module meta-data (added by MakeMaker)

@@ -7,7 +7,7 @@ WriteMakefile(
     'VERSION_FROM'	=> 'Simple.pm', # finds $VERSION
     'PREREQ_PM'		=> {
         Inline            => '.44',
-        'Test::More'      => '0.47',
+        'Test::More'      => '0.48_01',
         'Test::Exception' => '0.15'
     },
     ($] >= 5.005 ?    ## Add these new keywords supported since 5.005
