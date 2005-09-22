@@ -1,7 +1,7 @@
 package AI::NeuralNet::Simple;
 
 $REVISION = '$Id: Simple.pm,v 1.3 2004/01/31 20:34:11 ovid Exp $';
-$VERSION  = '0.02';
+$VERSION  = '0.03';
 
 use strict;
 use warnings;
@@ -977,13 +977,11 @@ feed back error propogation is but one of many types.
 
 =head1 AUTHOR
 
-Curtis "Ovid" Poe, E<lt>eop_divo_sitruc@yahoo.comE<gt>
-
-To email me, reverse "eop_divo_sitruc" in the email above.
+Curtis "Ovid" Poe, C<ovid [at] cpan [dot] org>
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright 2003 by Curtis "Ovid" Poe
+Copyright 2003-2005 by Curtis "Ovid" Poe
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself. 

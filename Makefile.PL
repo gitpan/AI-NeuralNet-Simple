@@ -8,7 +8,8 @@ WriteMakefile(
     'PREREQ_PM'		=> {
         Inline            => '.44',
         'Test::More'      => '0.48_01',
-        'Test::Exception' => '0.15'
+        'Test::Exception' => '0.15',
+        'Sub::Uplevel'    => 0, # hate it, hate it, hate it
     },
     ($] >= 5.005 ?    ## Add these new keywords supported since 5.005
       (ABSTRACT_FROM => 'Simple.pm', # retrieve abstract from module
