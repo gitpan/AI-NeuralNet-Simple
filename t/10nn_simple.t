@@ -1,4 +1,4 @@
-use Test::More tests => 18;
+use Test::More tests => 22;
 use Test::Exception;
 use strict;
 
@@ -25,7 +25,7 @@ isa_ok($net, $CLASS => '...and the object it returns');
 
 can_ok($net, 'learn_rate');
 throws_ok {$net->learn_rate(2)}
-    qr/^\Qlearn rate must be between 0 and 1, exclusive\E/,
+    qr/^\QLearn rate must be between 0 and 1, exclusive\E/,
     '... and setting it outside of legal boundaries should die';
 is(sprintf("%.1f", $net->learn_rate), "0.2", '... and it should have the correct learn rate');
 isa_ok($net->learn_rate(.3), $CLASS => '... and setting it should return the object');
@@ -50,3 +50,18 @@ is($net->winner([1,0]), 1, '... and it should return the index of the highest va
 is($net->winner([0,1]), 1, '... and it should return the index of the highest valued result');
 is($net->winner([0,0]), 0, '... and it should return the index of the highest valued result');
 
+# teach the network logical 'and' using the tanh() activation with delta=2
+$net = $CLASS->new(2,1,2);
+$net->delta(2);
+$net->use_bipolar(1);
+my $mse = $net->train_set([
+	[1,1] => [0,1],
+	[1,0] => [1,0],
+	[0,1] => [1,0],
+	[0,0] => [1,0],
+], 10000, 0.2);
+
+is($net->winner([1,1]), 1, '1 AND 1 = 1');
+is($net->winner([1,0]), 0, '1 AND 0 = 0');
+is($net->winner([0,1]), 0, '0 AND 1 = 0');
+is($net->winner([0,0]), 0, '0 AND 0 = 0');

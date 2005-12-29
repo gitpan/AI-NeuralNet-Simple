@@ -1,23 +1,32 @@
 package AI::NeuralNet::Simple;
 
 $REVISION = '$Id: Simple.pm,v 1.3 2004/01/31 20:34:11 ovid Exp $';
-$VERSION  = '0.03';
+$VERSION  = '0.10';
+
+use Log::Agent;
 
 use strict;
 use warnings;
 
+sub handle	{ $_[0]->{handle} }
+
 sub new
 {
-    my ($class,@args) = @_;
-    die "You must supply three positive integers to new()" unless 3 == @args;
+    my ($class, @args) = @_;
+    logdie "you must supply three positive integers to new()"
+		unless 3 == @args;
     foreach (@args) {
-        die "Arguments to new() must be positive integers" unless defined $_ && /^\d+/;
+        logdie "arguments to new() must be positive integers"
+			unless defined $_ && /^\d+/;
     }
-    _new_network(@args);
+	my $seed = rand(1);		# Perl invokes srand() on first call to rand()
+    my $handle = c_new_network(@args);
+	logdie "could not create new network" unless $handle >= 0;
     my $self = bless {
         input  => $args[0],
         hidden => $args[1],
         output => $args[2],
+        handle => $handle,
     }, $class;
     $self->iterations(10000); # set a reasonable default
 }
@@ -25,23 +34,22 @@ sub new
 sub train
 {
     my ($self, $inputref, $outputref) = @_;
-    _train($inputref, $outputref);
-    $self;
+    return c_train($self->handle, $inputref, $outputref);
 }
 
 sub train_set
 {
-    my ($self, $set, $iterations) = @_;
+    my ($self, $set, $iterations, $mse) = @_;
     $iterations ||= $self->iterations;
-    _train_set($set,$iterations);
-    $self;
+	$mse = -1.0 unless defined $mse;
+    return c_train_set($self->handle, $set, $iterations, $mse);
 }
 
 sub iterations
 {
-    my ($self,$iterations) = @_;
+    my ($self, $iterations) = @_;
     if (defined $iterations) {
-        die "iterations() value must be a positive integer."
+        logdie "iterations() value must be a positive integer."
             unless $iterations and $iterations =~ /^\d+$/;
         $self->{iterations} = $iterations;
         return $self;
@@ -49,17 +57,34 @@ sub iterations
     $self->{iterations};
 }
 
+sub delta
+{
+    my ($self, $delta) = @_;
+	return c_get_delta($self->handle) unless defined $delta;
+	logdie "delta() value must be a positive number" unless $delta > 0.0;
+	c_set_delta($self->handle, $delta);
+	return $self;
+}
+
+sub use_bipolar
+{
+    my ($self, $bipolar) = @_;
+	return c_get_use_bipolar($self->handle) unless defined $bipolar;
+	c_set_use_bipolar($self->handle, $bipolar);
+	return $self;
+}
+
 sub infer
 {
     my ($self,$data) = @_;
-    _infer($data);
+    c_infer($self->handle, $data);
 }
 
 sub winner 
 {
     # returns index of largest value in inferred answer
-    my ($self,$data) = @_;
-    my $arrayref     = _infer($data);
+    my ($self, $data) = @_;
+    my $arrayref     = c_infer($self->handle, $data);
 
     my $largest      = 0;
     for (0 .. $#$arrayref) {
@@ -70,18 +95,44 @@ sub winner
 
 sub learn_rate
 {
-    my ($self,$rate) = @_;
-    return _get_learn_rate(0) unless defined $rate; 
-    unless ($rate > 0 and $rate < 1) {
-        die "learn rate must be between 0 and 1, exclusive";
-    }
-    _set_learn_rate($rate);
+    my ($self, $rate) = @_;
+    return c_get_learn_rate($self->handle) unless defined $rate; 
+    logdie "learn rate must be between 0 and 1, exclusive"
+		unless $rate > 0 && $rate < 1;
+    c_set_learn_rate($self->handle, $rate);
     return $self;
 }
 
 sub DESTROY
 {
-    _destroy_network();
+	my $self = shift;
+    c_destroy_network($self->handle);
+}
+
+#
+# Serializing hook for Storable
+#
+sub STORABLE_freeze {
+	my ($self, $cloning) = @_;
+	my $internal = c_export_network($self->handle);
+
+	# This is an excellent example where "we know better" than
+	# the recommended way in Storable's man page...
+	# Behaviour is the same whether we're cloning or not --RAM
+
+	my %copy = %$self;
+	delete $copy{handle};
+
+	return("", \%copy, $internal);
+}
+
+#
+# Deserializing hook for Storable
+#
+sub STORABLE_thaw {
+	my ($self, $cloning, $x, $copy, $internal) = @_;
+	%$self = %$copy;
+	$self->{handle} = c_import_network($internal);
 }
 
 use Inline C => <<'END_OF_C_CODE';
@@ -91,9 +142,6 @@ use Inline C => <<'END_OF_C_CODE';
  */
 
 #define RAND_WEIGHT ( ((float)rand() / (float)RAND_MAX) - 0.5 )
-
-#define getSRand() ((float)rand() / (float)RAND_MAX)
-#define getRand()  (int)((x) * getSRand())
 
 #define sqr(x) ((x) * (x))
 
@@ -126,33 +174,39 @@ typedef struct {
     int output;
 } NEURON_COUNT;
 
-NEURON_COUNT size;
-
 typedef struct {
     float        learn_rate;
+    double       delta;
+    int          use_bipolar;
     SYNAPSE      weight;
     ERROR        error;
     LAYER        neuron;
     NEURON_COUNT size;
+	double       *tmp;
 } NEURAL_NETWORK;
 
-NEURAL_NETWORK network;
+int networks = 0;
+NEURAL_NETWORK **network = NULL;
 
 AV*    get_array_from_aoa(SV* scalar, int index);
 AV*    get_array(SV* aref);
 SV*    get_element(AV* array, int index);
 
-double sigmoid_derivative(double val);
-double sigmoid(double val);
+double sigmoid(NEURAL_NETWORK *n, double val);
+double sigmoid_derivative(NEURAL_NETWORK *n, double val);
 float  get_float_element(AV* array, int index);
 int    is_array_ref(SV* ref);
-void   _assign_random_weights(void);
-void   _back_propogate(void);
-void   _destroy_network();
-void   _feed(double *input, double *output, int learn);
-void   _feed_forward(void);
-float  _get_learn_rate(int);
-void   _set_learn_rate(float);
+void   c_assign_random_weights(NEURAL_NETWORK *);
+void   c_back_propagate(NEURAL_NETWORK *);
+void   c_destroy_network(int);
+void   c_feed(NEURAL_NETWORK *, double *input, double *output, int learn);
+void   c_feed_forward(NEURAL_NETWORK *);
+float  c_get_learn_rate(int);
+void   c_set_learn_rate(int, float);
+SV*    c_export_network(int handle);
+int    c_import_network(SV *);
+
+#define ABS(x)		((x) > 0.0 ? (x) : -(x))
 
 int is_array_ref(SV* ref)
 {
@@ -162,14 +216,46 @@ int is_array_ref(SV* ref)
         return 0;
 }
 
-double sigmoid(double val)
+double sigmoid(NEURAL_NETWORK *n, double val)
 {
-    return (1.0 / (1.0 + exp(-val)));
+    return 1.0 / (1.0 + exp(-n->delta * val));
 }
 
-double sigmoid_derivative(double val)
+double sigmoid_derivative(NEURAL_NETWORK *n, double val)
 {
-    return (val * (1.0 - val));
+	/*
+	 * It's always called with val=sigmoid(x) and we want sigmoid'(x).
+	 *
+	 * Since sigmoid'(x) = delta * sigmoid(x) * (1 - sigmoid(x))
+	 * the value we return is extremely simple.
+	 *
+	 * sigmoid_derivative(x) is NOT sigmoid'(x).
+	 */
+
+    return n->delta * val * (1.0 - val);
+}
+
+/* Not using tanh() as this is already defined in math headers */
+double hyperbolic_tan(NEURAL_NETWORK *n, double val)
+{
+	double epx = exp(n->delta * val);
+	double emx = exp(-n->delta * val);
+
+	return (epx - emx) / (epx + emx);
+}
+
+double hyperbolic_tan_derivative(NEURAL_NETWORK *n, double val)
+{
+	/*
+	 * It's always called with val=tanh(delta*x) and we want tanh'(delta*x).
+	 *
+	 * Since tanh'(delta*x) = delta * (1 - tanh(delta*x)^2)
+	 * the value we return is extremely simple.
+	 *
+	 * hyperbolic_tan_derivative(x) is NOT tanh'(x).
+	 */
+
+    return n->delta * (1.0 - val * val);
 }
 
 AV* get_array(SV* aref)
@@ -177,29 +263,31 @@ AV* get_array(SV* aref)
     if (! is_array_ref(aref))
         croak("get_array() argument is not an array reference");
     
-    return (AV*)SvRV(aref);
+    return (AV*) SvRV(aref);
 }
 
 float get_float_element(AV* array, int index)
 {
-    SV *elem = get_element(array, index);
+    SV **sva;
+    SV *sv;
 
-    if (looks_like_number(elem))
-        return atof(SvPV(elem, PL_na));
-    else
-        croak("Element did not look like a number");
+    sva = av_fetch(array, index, 0);
+	if (!sva)
+		return 0.0;
+
+	sv = *sva;
+	return SvNV(sv);
 }
 
 SV* get_element(AV* array, int index)
 {
     SV   **temp;
     temp = av_fetch(array, index, 0);
-    if (!temp) {
-        printf("Could not fetch element %d from array", index);
-        croak("Ending program");
-    }
-    else
-        return *temp;
+
+    if (!temp)
+        croak("Item %d in array is not defined", index);
+
+    return *temp;
 }
 
 AV* get_array_from_aoa(SV* aref, int index)
@@ -215,51 +303,146 @@ AV* get_array_from_aoa(SV* aref, int index)
     return get_array(elem);
 }
 
-/* apparently, I have to pass *something* to this function
-   or else Perl won't be able to call it :*/
-float _get_learn_rate(int dummy)
+NEURAL_NETWORK *c_get_network(int handle)
 {
-    return network.learn_rate;
+	NEURAL_NETWORK *n;
+
+	if (handle < 0 || handle >= networks)
+		croak("Invalid neural network handle");
+
+	n = network[handle];
+
+	if (n == NULL)
+		croak("Stale neural network handle");
+
+	return n;
 }
 
-void _set_learn_rate(float rate)
+int c_new_handle(void)
 {
-    network.learn_rate = rate;
+	int handle = -1;
+
+	/*
+	 * Allocate the network array if not already done.
+	 * Then allocate a new handle for the network.
+	 */
+
+	if (network == NULL) {
+		int i;
+
+		networks = 10;
+		network = malloc(networks * sizeof(*network));
+
+		for (i = 0; i < networks; i++)
+			network[i] = NULL;
+
+		handle = 0;
+	} else {
+		int i;
+
+		for (i = 0; i < networks; i++) {
+			if (network[i] == NULL) {
+				handle = i;
+				break;
+			}
+		}
+
+		if (handle == -1) {
+			handle = networks;
+			networks += 10;
+			network = realloc(network, networks * sizeof(*network));
+
+			for (i = networks - 10; i < networks; i++)
+				network[i] = NULL;
+		}
+	}
+
+	network[handle] = malloc(sizeof(NEURAL_NETWORK));
+
+	return handle;
 }
 
-int _create_network(void)
+float c_get_learn_rate(int handle)
+{
+	NEURAL_NETWORK *n = c_get_network(handle);
+
+    return n->learn_rate;
+}
+
+void c_set_learn_rate(int handle, float rate)
+{
+	NEURAL_NETWORK *n = c_get_network(handle);
+
+    n->learn_rate = rate;
+}
+
+double c_get_delta(int handle)
+{
+	NEURAL_NETWORK *n = c_get_network(handle);
+
+    return n->delta;
+}
+
+
+void c_set_delta(int handle, double delta)
+{
+	NEURAL_NETWORK *n = c_get_network(handle);
+
+    n->delta = delta;
+}
+
+int c_get_use_bipolar(int handle)
+{
+	NEURAL_NETWORK *n = c_get_network(handle);
+
+    return n->use_bipolar;
+}
+
+void c_set_use_bipolar(int handle, int bipolar)
+{
+	NEURAL_NETWORK *n = c_get_network(handle);
+
+    n->use_bipolar = bipolar;
+}
+
+int c_create_network(NEURAL_NETWORK *n)
 {
     int i;
     /* each of the next two variables has an extra row for the "bias" */
-    int input_layer_with_bias  = network.size.input  + 1;
-    int hidden_layer_with_bias = network.size.hidden + 1;
-    network.learn_rate = .2;
+    int input_layer_with_bias  = n->size.input  + 1;
+    int hidden_layer_with_bias = n->size.hidden + 1;
 
-    network.neuron.input  = malloc(sizeof(double) * network.size.input);
-    network.neuron.hidden = malloc(sizeof(double) * network.size.hidden);
-    network.neuron.output = malloc(sizeof(double) * network.size.output);
-    network.neuron.target = malloc(sizeof(double) * network.size.output);
+    n->learn_rate = .2;
+    n->delta = 1.0;
+    n->use_bipolar = 0;
 
-    network.error.hidden  = malloc(sizeof(double) * network.size.hidden);
-    network.error.output  = malloc(sizeof(double) * network.size.output);
+    n->tmp = malloc(sizeof(double) * n->size.input);
+
+    n->neuron.input  = malloc(sizeof(double) * n->size.input);
+    n->neuron.hidden = malloc(sizeof(double) * n->size.hidden);
+    n->neuron.output = malloc(sizeof(double) * n->size.output);
+    n->neuron.target = malloc(sizeof(double) * n->size.output);
+
+    n->error.hidden  = malloc(sizeof(double) * n->size.hidden);
+    n->error.output  = malloc(sizeof(double) * n->size.output);
     
     /* one extra for sentinel */
-    network.weight.input_to_hidden  
+    n->weight.input_to_hidden  
         = malloc(sizeof(void *) * (input_layer_with_bias + 1));
-    network.weight.hidden_to_output 
+    n->weight.hidden_to_output 
         = malloc(sizeof(void *) * (hidden_layer_with_bias + 1));
 
-    if(!network.weight.input_to_hidden || !network.weight.hidden_to_output) {
+    if(!n->weight.input_to_hidden || !n->weight.hidden_to_output) {
         printf("Initial malloc() failed\n");
         return 0;
     }
     
     /* now allocate the actual rows */
     for(i = 0; i < input_layer_with_bias; i++) {
-        network.weight.input_to_hidden[i] 
+        n->weight.input_to_hidden[i] 
             = malloc(hidden_layer_with_bias * sizeof(double));
-        if(network.weight.input_to_hidden[i] == 0) {
-            free(*network.weight.input_to_hidden);
+        if(n->weight.input_to_hidden[i] == 0) {
+            free(*n->weight.input_to_hidden);
             printf("Second malloc() to weight.input_to_hidden failed\n");
             return 0;
         }
@@ -267,62 +450,299 @@ int _create_network(void)
 
     /* now allocate the actual rows */
     for(i = 0; i < hidden_layer_with_bias; i++) {
-        network.weight.hidden_to_output[i] 
-            = malloc(network.size.output * sizeof(double));
-        if(network.weight.hidden_to_output[i] == 0) {
-            free(*network.weight.hidden_to_output);
+        n->weight.hidden_to_output[i] 
+            = malloc(n->size.output * sizeof(double));
+        if(n->weight.hidden_to_output[i] == 0) {
+            free(*n->weight.hidden_to_output);
             printf("Second malloc() to weight.hidden_to_output failed\n");
             return 0;
         }
     }
 
     /* initialize the sentinel value */
-    network.weight.input_to_hidden[input_layer_with_bias]   = 0;
-    network.weight.hidden_to_output[hidden_layer_with_bias] = 0;
+    n->weight.input_to_hidden[input_layer_with_bias]   = 0;
+    n->weight.hidden_to_output[hidden_layer_with_bias] = 0;
 
     return 1;
 }
 
-void _destroy_network()
+void c_destroy_network(int handle)
 {
     double **row;
+	NEURAL_NETWORK *n = c_get_network(handle);
 
-    for(row = network.weight.input_to_hidden; *row != 0; row++) {
+    for(row = n->weight.input_to_hidden; *row != 0; row++) {
         free(*row);
     }
-    free(network.weight.input_to_hidden);
+    free(n->weight.input_to_hidden);
 
-    for(row = network.weight.hidden_to_output; *row != 0; row++) {
+    for(row = n->weight.hidden_to_output; *row != 0; row++) {
         free(*row);
     }
-    free(network.weight.hidden_to_output);
+    free(n->weight.hidden_to_output);
 
-    free(network.neuron.input);
-    free(network.neuron.hidden);
-    free(network.neuron.output);
-    free(network.neuron.target);
+    free(n->neuron.input);
+    free(n->neuron.hidden);
+    free(n->neuron.output);
+    free(n->neuron.target);
 
-    free(network.error.hidden);
-    free(network.error.output);
+    free(n->error.hidden);
+    free(n->error.output);
+
+	free(n->tmp);
+
+	network[handle] = NULL;
+}
+
+/*
+ * Build a Perl reference on array `av'.
+ * This performs something like "$rv = \@av;" in Perl.
+ */
+SV *build_rv(AV *av)
+{
+	SV *rv;
+
+	/*
+	 * To understand what is going on here, look at retrieve_ref()
+	 * in the Storable.xs file.  In particular, we don't perform
+	 * an SvREFCNT_inc(av) because the av we're supplying is going
+	 * to be referenced only by the REF we're building here.
+	 *		--RAM
+	 */
+
+	rv = NEWSV(10002, 0);
+	sv_upgrade(rv, SVt_RV);
+	SvRV(rv) = (SV *) av;
+	SvROK_on(rv);
+
+	return rv;
+}
+
+/*
+ * Build reference to a 2-dimensional array, implemented as an array
+ * or array references.  The holding array has `rows' rows and each array
+ * reference has `columns' entries.
+ *
+ * The name "axa" denotes the "product" of 2 arrays.
+ */
+SV *build_axaref(void *arena, int rows, int columns)
+{
+	AV *av;
+	int i;
+	double **p;
+
+	av = newAV();
+	av_extend(av, rows);
+
+	for (i = 0, p = arena; i < rows; i++, p++) {
+		int j;
+		double *q;
+		AV *av2;
+
+		av2 = newAV();
+		av_extend(av2, columns);
+
+		for (j = 0, q = *p; j < columns; j++, q++)
+			av_store(av2, j, newSVnv((NV) *q));
+
+		av_store(av, i, build_rv(av2));
+	}
+
+	return build_rv(av);
+}
+
+#define EXPORT_VERSION	1
+#define EXPORTED_ITEMS	9
+
+/*
+ * Exports the C data structures to the Perl world for serialization
+ * by Storable.  We don't want to duplicate the logic of Storable here
+ * even though we have to do some low-level Perl object construction.
+ *
+ * The structure we return is an array reference, which contains the
+ * following items:
+ *
+ *  0	the export version number, in case format changes later
+ * 	1	the amount of neurons in the input layer
+ * 	2	the amount of neurons in the hidden layer
+ * 	3	the amount of neurons in the output layer
+ *	4	the learning rate
+ *	5	the sigmoid delta
+	6	whether to use a bipolar (tanh) routine instead of the sigmoid
+ *	7	[[weight.input_to_hidden[0]], [weight.input_to_hidden[1]], ...]
+ *	8	[[weight.hidden_to_output[0]], [weight.hidden_to_output[1]], ...]
+ */
+SV *c_export_network(int handle)
+{
+	NEURAL_NETWORK *n = c_get_network(handle);
+	AV *av;
+	SV *rv;
+	int i = 0;
+
+	av = newAV();
+	av_extend(av, EXPORTED_ITEMS);
+
+	av_store(av, i++,  newSViv(EXPORT_VERSION));
+	av_store(av, i++,  newSViv(n->size.input));
+	av_store(av, i++,  newSViv(n->size.hidden));
+	av_store(av, i++,  newSViv(n->size.output));
+	av_store(av, i++,  newSVnv(n->learn_rate));
+	av_store(av, i++,  newSVnv(n->delta));
+	av_store(av, i++,  newSViv(n->use_bipolar));
+	av_store(av, i++,
+				build_axaref(n->weight.input_to_hidden,
+					n->size.input + 1, n->size.hidden + 1));
+	av_store(av, i++,
+				build_axaref(n->weight.hidden_to_output,
+					n->size.hidden + 1, n->size.output));
+
+	if (i != EXPORTED_ITEMS)
+		croak("BUG in c_export_network()");
+
+	return build_rv(av);
+}
+
+/*
+ * Load a Perl array of array (a matrix) with "rows" rows and "columns" columns
+ * into the pre-allocated C array of arrays.
+ *
+ * The "hold" argument is an holding array and the Perl array of array which
+ * we expect is at index "idx" within that holding array.
+ */
+void c_load_axa(AV *hold, int idx, void *arena, int rows, int columns)
+{
+	SV **sav;
+	SV *rv;
+	AV *av;
+	int i;
+	double **array = arena;
+
+	sav = av_fetch(hold, idx, 0);
+	if (sav == NULL)
+		croak("serialized item %d is not defined", idx);
+
+	rv = *sav;
+	if (!is_array_ref(rv))
+		croak("serialized item %d is not an array reference", idx);
+
+	av = get_array(rv);		/* This is an array of array refs */
+
+	for (i = 0; i < rows; i++) {
+		double *row = array[i];
+		int j;
+		AV *subav;
+
+		sav = av_fetch(av, i, 0);
+		if (sav == NULL)
+			croak("serialized item %d has undefined row %d", idx, i);
+		rv = *sav;
+		if (!is_array_ref(rv))
+			croak("row %d of serialized item %d is not an array ref", i, idx);
+
+		subav = get_array(rv);
+
+		for (j = 0; j < columns; j++)
+			row[j] = get_float_element(subav, j);
+	}
+}
+
+/*
+ * Create new network from a retrieved data structure, such as the one
+ * produced by c_export_network().
+ */
+int c_import_network(SV *rv)
+{
+	NEURAL_NETWORK *n;
+	int handle;
+	SV **sav;
+	AV *av;
+	int i = 0;
+
+	/*
+	 * Unfortunately, since those data come from the outside, we need
+	 * to validate most of the structural information to make sure
+	 * we're not fed garbage or something we cannot process, like a
+	 * newer version of the serialized data. This makes the code heavy.
+	 *		--RAM
+	 */
+
+	if (!is_array_ref(rv))
+		croak("c_import_network() not given an array reference");
+
+	av = get_array(rv);
+
+	/* Check version number */
+	sav = av_fetch(av, i++, 0);
+	if (sav == NULL || SvIVx(*sav) != EXPORT_VERSION)
+		croak("c_import_network() given unknown version %d",
+			sav == NULL ? 0 : SvIVx(*sav));
+
+	/* Check length -- at version 1, length is fixed to 13 */
+	if (av_len(av) + 1 != EXPORTED_ITEMS)
+		croak("c_import_network() not given a %d-item array reference",
+			EXPORTED_ITEMS);
+
+	handle = c_new_handle();
+	n = c_get_network(handle);
+
+	sav = av_fetch(av, i++, 0);
+	if (sav == NULL)
+		croak("undefined input size (item %d)", i - 1);
+    n->size.input  = SvIVx(*sav);
+
+	sav = av_fetch(av, i++, 0);
+	if (sav == NULL)
+		croak("undefined hidden size (item %d), i - 1");
+    n->size.hidden = SvIVx(*sav);
+
+	sav = av_fetch(av, i++, 0);
+	if (sav == NULL)
+		croak("undefined output size (item %d)", i - 1);
+    n->size.output = SvIVx(*sav);
+
+    if (!c_create_network(n))
+        return -1;
+
+	sav = av_fetch(av, i++, 0);
+	if (sav == NULL)
+		croak("undefined learn_rate (item %d)", i - 1);
+    n->learn_rate = SvNVx(*sav);
+
+	sav = av_fetch(av, i++, 0);
+	if (sav == NULL)
+		croak("undefined delta (item %d)", i - 1);
+    n->delta = SvNVx(*sav);
+
+	sav = av_fetch(av, i++, 0);
+	if (sav == NULL)
+		croak("undefined use_bipolar (item %d)", i - 1);
+    n->use_bipolar = SvIVx(*sav);
+
+	c_load_axa(av, i++, n->weight.input_to_hidden,
+		n->size.input + 1, n->size.hidden + 1);
+	c_load_axa(av, i++, n->weight.hidden_to_output,
+		n->size.hidden + 1, n->size.output);
+
+    return handle;
 }
 
 /*
  * Support functions for back propogation
  */
 
-void _assign_random_weights(void)
+void c_assign_random_weights(NEURAL_NETWORK *n)
 {
     int hid, inp, out;
 
-    for (inp = 0; inp < network.size.input + 1; inp++) {
-        for (hid = 0; hid < network.size.hidden; hid++) {
-            network.weight.input_to_hidden[inp][hid] = RAND_WEIGHT;
+    for (inp = 0; inp < n->size.input + 1; inp++) {
+        for (hid = 0; hid < n->size.hidden; hid++) {
+            n->weight.input_to_hidden[inp][hid] = RAND_WEIGHT;
         }
     }
 
-    for (hid = 0; hid < network.size.hidden + 1; hid++) {
-        for (out = 0; out < network.size.output; out++) {
-            network.weight.hidden_to_output[hid][out] = RAND_WEIGHT;
+    for (hid = 0; hid < n->size.hidden + 1; hid++) {
+        for (out = 0; out < n->size.output; out++) {
+            n->weight.hidden_to_output[hid][out] = RAND_WEIGHT;
         }
     }
 }
@@ -331,109 +751,132 @@ void _assign_random_weights(void)
  * Feed-forward Algorithm
  */
 
-void _feed_forward(void)
+void c_feed_forward(NEURAL_NETWORK *n)
 {
     int inp, hid, out;
     double sum;
+	double (*activation)(NEURAL_NETWORK *, double);
+
+	activation = n->use_bipolar ? hyperbolic_tan : sigmoid;
 
     /* calculate input to hidden layer */
-    for (hid = 0; hid < network.size.hidden; hid++) {
+    for (hid = 0; hid < n->size.hidden; hid++) {
 
         sum = 0.0;
-        for (inp = 0; inp < network.size.input; inp++) {
-            sum += network.neuron.input[inp]
-                * network.weight.input_to_hidden[inp][hid];
+        for (inp = 0; inp < n->size.input; inp++) {
+            sum += n->neuron.input[inp]
+                * n->weight.input_to_hidden[inp][hid];
         }
 
         /* add in bias */
-        sum += network.weight.input_to_hidden[network.size.input][hid];
+        sum += n->weight.input_to_hidden[n->size.input][hid];
 
-        network.neuron.hidden[hid] = sigmoid(sum);
+        n->neuron.hidden[hid] = (*activation)(n, sum);
     }
 
     /* calculate the hidden to output layer */
-    for (out = 0; out < network.size.output; out++) {
+    for (out = 0; out < n->size.output; out++) {
 
         sum = 0.0;
-        for (hid = 0; hid < network.size.hidden; hid++) {
-            sum += network.neuron.hidden[hid] 
-                * network.weight.hidden_to_output[hid][out];
+        for (hid = 0; hid < n->size.hidden; hid++) {
+            sum += n->neuron.hidden[hid] 
+                * n->weight.hidden_to_output[hid][out];
         }
 
         /* add in bias */
-        sum += network.weight.hidden_to_output[network.size.hidden][out];
+        sum += n->weight.hidden_to_output[n->size.hidden][out];
 
-        network.neuron.output[out] = sigmoid(sum);
+        n->neuron.output[out] = (*activation)(n, sum);
     }
 }
 
 /*
- * Backpropogation algorithm.  This is where the learning gets done.
+ * Back-propogation algorithm.  This is where the learning gets done.
  */
-
-void _back_propogate(void)
+void c_back_propagate(NEURAL_NETWORK *n)
 {
     int inp, hid, out;
+	double (*activation_derivative)(NEURAL_NETWORK *, double);
+
+	activation_derivative = n->use_bipolar ?
+		hyperbolic_tan_derivative : sigmoid_derivative;
 
     /* calculate the output layer error (step 3 for output cell) */
-    for (out = 0; out < network.size.output; out++) {
-        network.error.output[out] 
-            = (network.neuron.target[out] - network.neuron.output[out]) 
-              * sigmoid_derivative(network.neuron.output[out]);
+    for (out = 0; out < n->size.output; out++) {
+        n->error.output[out] =
+			(n->neuron.target[out] - n->neuron.output[out]) 
+              * (*activation_derivative)(n, n->neuron.output[out]);
     }
 
     /* calculate the hidden layer error (step 3 for hidden cell) */
-    for (hid = 0; hid < network.size.hidden; hid++) {
+    for (hid = 0; hid < n->size.hidden; hid++) {
 
-        network.error.hidden[hid] = 0.0;
-        for (out = 0; out < network.size.output; out++) {
-            network.error.hidden[hid] 
-                += network.error.output[out] 
-                 * network.weight.hidden_to_output[hid][out];
+        n->error.hidden[hid] = 0.0;
+        for (out = 0; out < n->size.output; out++) {
+            n->error.hidden[hid] 
+                += n->error.output[out] 
+                 * n->weight.hidden_to_output[hid][out];
         }
-        network.error.hidden[hid] 
-            *= sigmoid_derivative(network.neuron.hidden[hid]);
+        n->error.hidden[hid] 
+            *= (*activation_derivative)(n, n->neuron.hidden[hid]);
     }
 
     /* update the weights for the output layer (step 4) */
-    for (out = 0; out < network.size.output; out++) {
-        for (hid = 0; hid < network.size.hidden; hid++) {
-            network.weight.hidden_to_output[hid][out] 
-                += (network.learn_rate 
-                  * network.error.output[out] 
-                  * network.neuron.hidden[hid]);
+    for (out = 0; out < n->size.output; out++) {
+        for (hid = 0; hid < n->size.hidden; hid++) {
+            n->weight.hidden_to_output[hid][out] 
+                += (n->learn_rate 
+                  * n->error.output[out] 
+                  * n->neuron.hidden[hid]);
         }
 
         /* update the bias */
-        network.weight.hidden_to_output[network.size.hidden][out] 
-            += (network.learn_rate 
-              * network.error.output[out]);
+        n->weight.hidden_to_output[n->size.hidden][out] 
+            += (n->learn_rate 
+              * n->error.output[out]);
     }
 
     /* update the weights for the hidden layer (step 4) */
-    for (hid = 0; hid < network.size.hidden; hid++) {
+    for (hid = 0; hid < n->size.hidden; hid++) {
 
-        for  (inp = 0; inp < network.size.input; inp++) {
-            network.weight.input_to_hidden[inp][hid] 
-                += (network.learn_rate 
-                  * network.error.hidden[hid] 
-                  * network.neuron.input[inp]);
+        for  (inp = 0; inp < n->size.input; inp++) {
+            n->weight.input_to_hidden[inp][hid] 
+                += (n->learn_rate 
+                  * n->error.hidden[hid] 
+                  * n->neuron.input[inp]);
         }
 
         /* update the bias */
-        network.weight.input_to_hidden[network.size.input][hid] 
-            += (network.learn_rate 
-              * network.error.hidden[hid]);
+        n->weight.input_to_hidden[n->size.input][hid] 
+            += (n->learn_rate 
+              * n->error.hidden[hid]);
     }
 }
 
-void _train(SV* input, SV* output)
+/*
+ * Compute the Mean Square Error between the actual output and the
+ * targeted output.
+ */
+double mean_square_error(NEURAL_NETWORK *n, double *target)
 {
+	double error = 0.0;
+	int i;
+
+	for (i = 0; i < n->size.output; i++)
+		error += sqr(target[i] - n->neuron.output[i]);
+
+	return 0.5 * error;
+}
+
+double c_train(int handle, SV* input, SV* output)
+{
+	NEURAL_NETWORK *n = c_get_network(handle);
     int i,length;
     AV *array;
     SV *elem;
-    double *input_array  = malloc(sizeof(double) * network.size.input);
-    double *output_array = malloc(sizeof(double) * network.size.output);
+    double *input_array  = malloc(sizeof(double) * n->size.input);
+    double *output_array = malloc(sizeof(double) * n->size.output);
+	double error;
 
     if (! is_array_ref(input) || ! is_array_ref(output)) {
         croak("train() takes two arrayrefs.");
@@ -442,7 +885,7 @@ void _train(SV* input, SV* output)
     array  = get_array(input);
     length = av_len(array)+ 1;
     
-    if (length != network.size.input) {
+    if (length != n->size.input) {
         croak("Length of input array does not match network");
     }
     for (i = 0; i < length; i++) {
@@ -452,48 +895,57 @@ void _train(SV* input, SV* output)
     array  = get_array(output);
     length = av_len(array) + 1;
     
-    if (length != network.size.output) {
+    if (length != n->size.output) {
         croak("Length of output array does not match network");
     }
     for (i = 0; i < length; i++) {
         output_array[i] = get_float_element(array, i);
     }
 
-    _feed(input_array, output_array, 1);
+    c_feed(n, input_array, output_array, 1);
+	error = mean_square_error(n, output_array);
 
     free(input_array);
     free(output_array);
+
+	return error;
 }
 
-int _new_network(int input, int hidden, int output)
+int c_new_network(int input, int hidden, int output)
 {
-    network.size.input  = input;
-    network.size.hidden = hidden;
-    network.size.output = output;
+	NEURAL_NETWORK *n;
+	int handle;
 
-    if ( ! _create_network() ) {
-        printf("Failure initializing synapse weights\n");
-        return 0;
-    }
+	handle = c_new_handle();
+	n = c_get_network(handle);
 
-    /* seed the random number generator */
-    srand(time(NULL));
-    _assign_random_weights();
-    return 1;
+    n->size.input  = input;
+    n->size.hidden = hidden;
+    n->size.output = output;
+
+    if (!c_create_network(n))
+        return -1;
+
+    /* Perl already seeded the random number generator, via a rand(1) call */
+
+    c_assign_random_weights(n);
+
+    return handle;
 }
 
-void _train_set(SV* set, int iterations)
+double c_train_set(int handle, SV* set, int iterations, double mse)
 {
+	NEURAL_NETWORK *n = c_get_network(handle);
     AV     *input_array, *output_array; /* perl arrays */
     double *input, *output; /* C arrays */
-    double error;
+    double max_error = 0.0;
 
     int set_length=0, input_length=0, output_length=0;
     int i,j;
     int index;
 
     set_length = av_len(get_array(set))+1;
-    
+
     if (!set_length)
         croak("_train_set() array ref has no data");
     if (set_length % 2)
@@ -509,82 +961,87 @@ void _train_set(SV* set, int iterations)
     for (i=0; i < set_length; i += 2) {
         input_array = get_array_from_aoa(set, i);
         
-        if (av_len(input_array)+1 != network.size.input)
+        if (av_len(input_array)+1 != n->size.input)
             croak("Length of input data does not match");
         
         /* iterate over the input_array and assign the floats to input */
         
-        for (j = 0; j < network.size.input; j++) {
-            index = (i/2*network.size.input)+j;
+        for (j = 0; j < n->size.input; j++) {
+            index = (i/2*n->size.input)+j;
             input[index] = get_float_element(input_array, j); 
         }
         
         output_array = get_array_from_aoa(set, i+1);
-        if (av_len(output_array)+1 != network.size.output)
+        if (av_len(output_array)+1 != n->size.output)
             croak("Length of output data does not match");
 
-        for (j = 0; j < network.size.output; j++) {
-            index = (i/2*network.size.output)+j;
+        for (j = 0; j < n->size.output; j++) {
+            index = (i/2*n->size.output)+j;
             output[index] = get_float_element(output_array, j); 
         }
     }
 
     for (i = 0; i < iterations; i++) {
+		max_error = 0.0;
+
         for (j = 0; j < (set_length/2); j++) {
-            _feed(&input[j*network.size.input], &output[j*network.size.output], 1);
-            if (! (i % 1000)) {
-                error = 0.0;
-                for (index = 0; index < network.size.output; index++) {
-                    int out_index = index + (j * network.size.output);
-                    error += sqr( (output[out_index] - network.neuron.output[index]) );
-                }
-                error = 0.5 * error;
-                //printf("mse = %f\n", error);
-            }
+			double error;
+
+            c_feed(n, &input[j*n->size.input], &output[j*n->size.output], 1);
+
+			if (mse >= 0.0 || i == iterations - 1) {
+				error = mean_square_error(n, &output[j*n->size.output]);
+				if (error > max_error)
+					max_error = error;
+			}
         }
+
+		if (mse >= 0 && max_error <= mse)	/* Below their target! */
+			break;
     }
+
     free(input);
     free(output);
+
+	return max_error;
 }
 
-SV* _infer(SV *array_ref)
+SV* c_infer(int handle, SV *array_ref)
 {
+	NEURAL_NETWORK *n = c_get_network(handle);
     int    i;
-    double *c_array, *dummy;
     AV     *perl_array, *result = newAV();
 
     /* feed the data */
     perl_array = get_array(array_ref);
-    c_array    = malloc(sizeof(double) * network.size.input);
 
-    for (i = 0; i < network.size.input; i++)
-        c_array[i] = get_float_element(perl_array, i);
+    for (i = 0; i < n->size.input; i++)
+        n->tmp[i] = get_float_element(perl_array, i);
 
-    _feed(c_array, dummy, 0); 
-    free(c_array);
+    c_feed(n, n->tmp, NULL, 0); 
 
     /* read the results */
-    for (i = 0; i < network.size.output; i++) {
-        av_push(result, newSVnv(network.neuron.output[i]));
+    for (i = 0; i < n->size.output; i++) {
+        av_push(result, newSVnv(n->neuron.output[i]));
     }
     return newRV_noinc((SV*) result);
 }
 
-void _feed(double *input, double *output, int learn)
+void c_feed(NEURAL_NETWORK *n, double *input, double *output, int learn)
 {
     int i;
 
-    for (i=0; i < network.size.input; i++) {
-        network.neuron.input[i]  = input[i];
+    for (i=0; i < n->size.input; i++) {
+        n->neuron.input[i]  = input[i];
     }
 
     if (learn)
-        for (i=0; i < network.size.output; i++)
-            network.neuron.target[i] = output[i];
+        for (i=0; i < n->size.output; i++)
+            n->neuron.target[i] = output[i];
 
-    _feed_forward();
+    c_feed_forward(n);
 
-    if (learn) _back_propogate(); 
+    if (learn) c_back_propagate(n); 
 }
 
 /*
@@ -744,16 +1201,16 @@ determine how many inputs and outputs we'll have.  The inputs are simple, we'll
 choose two inputs as this is the minimum necessary to teach a network this
 concept.  For the outputs, we'll also choose two neurons, with the neuron with
 the highest output value being the "true" or "false" response that we are
-looking for.  We'll only have one neuron for the input layer.  Thus, we get a
+looking for.  We'll only have one neuron for the hidden layer.  Thus, we get a
 network that resembles the following:
 
-         Input  Hidden  Output
+           Input   Hidden   Output
 
- input1  ---->n1\    /---->n5---> output1
-                 \  /
-                  n3
-                 /  \
- input2  ---->n2/    \---->n5---> output2
+ input1  ----> n1 -+    +----> n4 --->  output1
+                    \  /
+                     n3
+                    /  \
+ input2  ----> n2 -+    +----> n5 --->  output2
 
 Let's say that output 1 will correspond to "false" and output 2 will correspond
 to true.  If we feed 1 (or true) or both input 1 and input 2, we hope that output
@@ -766,10 +1223,10 @@ the expected results:
  1   1   0    1
  1   0   0    1
  0   1   0    1
- 0   0   0    0
+ 0   0   1    0
 
 The type of network we use is a forward-feed back error propagation network,
-referred to as a backpropagation network, for short.  The way it works is
+referred to as a back-propagation network, for short.  The way it works is
 simple.  When we feed in our input, it travels from the input to hidden layers
 and then to the output layers.  This is the "feed forward" part.  We then
 compare the output to the expected results and measure how far off we are.  We
@@ -828,6 +1285,37 @@ network described earlier:
 
   my $net = AI::NeuralNet::Simple->new(2,1,2);
 
+By default, the activation function for the neurons is the sigmoid function
+S() with delta = 1:
+
+	S(x) = 1 / (1 + exp(-delta * x))
+
+but you can change the delta after creation.  You can also use a bipolar
+activation function T(), using the hyperbolic tangent:
+
+	T(x) = tanh(delta * x)
+	tanh(x) = (exp(x) - exp(-x)) / (exp(x) + exp(-x))
+
+which allows the network to have neurons negatively impacting the weight,
+since T() is a signed function between (-1,+1) whereas S() only falls
+within (0,1).
+
+=head2 C<delta($delta)>
+
+Fetches the current I<delta> used in activation functions to scale the
+signal, or sets the new I<delta>. The higher the delta, the steeper the
+activation function will be.  The argument must be strictly positive.
+
+You should not change I<delta> during the traning.
+
+=head2 C<use_bipolar($boolean)>
+
+Returns whether the network currently uses a bipolar activation function.
+If an argument is supplied, instruct the network to use a bipolar activation
+function or not.
+
+You should not change the activation function during the traning.
+
 =head2 C<train(\@input, \@output)>
 
 This method trains the network to associate the input data set with the output
@@ -849,22 +1337,40 @@ network ten thousand times.
     $net->train([0,0] => [1,0]);
   }
 
-=head2 C<train_set(\@dataset, [$iterations])>
+The routine returns the Mean Squared Error (MSE) representing how far the
+network answered.
+
+It is far preferable to use C<train_set()> as this lets you control the MSE
+over the training set and it is more efficient because there are less memory
+copies back and forth.
+
+=head2 C<train_set(\@dataset, [$iterations, $mse])>
 
 Similar to train, this method allows us to train an entire data set at once.
 It is typically faster than calling individual "train" methods.  The first
 argument is expected to be an array ref of pairs of input and output array
-refs.  The second argument is the number of iterations to train the set.  If
+refs.
+
+The second argument is the number of iterations to train the set.  If
 this argument is not provided here, you may use the C<iterations()> method to
 set it (prior to calling C<train_set()>, of course).  A default of 10,000 will
 be provided if not set.
+
+The third argument is the targeted Mean Square Error (MSE). When provided,
+the traning sequence will compute the maximum MSE seen during an iteration
+over the training set, and if it is less than the supplied target, the
+training stops.  Computing the MSE at each iteration costs, but you are
+certain to not over-train your network.
 
   $net->train_set([
     [1,1] => [0,1],
     [1,0] => [0,1],
     [0,1] => [0,1],
     [0,0] => [1,0],
-  ], 10000);
+  ], 10000, 0.01);
+
+The routine returns the MSE of the last iteration, which is the highest MSE
+seen over the whole training set (and not an average MSE).
 
 =head2 C<iterations([$integer])>
 
@@ -943,14 +1449,6 @@ send me a patch or two.
 
 =over 4
 
-=item * Make MSE (mean squared error) public
-
-=item * Save and restore networks
-
-=item * Allow more than one network at a time
-
-=item * Allow different activation functions
-
 =item * Allow different numbers of layers
 
 =back
@@ -975,13 +1473,19 @@ copyright (c) 1990 by Massachussetts Institute of Technology.
 This book is a decent introduction to neural networks in general.  The forward
 feed back error propogation is but one of many types.
 
-=head1 AUTHOR
+=head1 AUTHORS
 
 Curtis "Ovid" Poe, C<ovid [at] cpan [dot] org>
 
+Multiple network support, persistence, export of MSE (mean squared error),
+training until MSE below a given threshold and customization of the
+activation function added by Raphael Manfredi C<Raphael_Manfredi@pobox.com>.
+
 =head1 COPYRIGHT AND LICENSE
 
-Copyright 2003-2005 by Curtis "Ovid" Poe
+Copyright (c) 2003-2005 by Curtis "Ovid" Poe
+
+Copyright (c) 2006 by Raphael Manfredi
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself. 

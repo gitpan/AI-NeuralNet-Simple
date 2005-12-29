@@ -1,11 +1,13 @@
 Changes
+examples/game_ai.pl
+examples/logical_or.pl
 Makefile.PL
 MANIFEST
+META.yml			Module meta-data (added by MakeMaker)
 README
 Simple.pm
 t/10nn_simple.t
-t/pod.t
+t/20nn_multi.t
+t/30nn_storable.t
 t/pod-coverage.t
-examples/game_ai.pl
-examples/logical_or.pl
-META.yml                                 Module meta-data (added by MakeMaker)
+t/pod.t
